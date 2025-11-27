@@ -38,8 +38,103 @@ function getAvailablePlayerNumber(room) {
 io.on('connection', (socket) => {
   console.log('New client connected:', socket.id);
 
+  // Handle random 1v1 matchmaking
+  socket.on('findRandomMatch', ({ playerName, gameType }) => {
+    console.log(`Player ${playerName} is looking for a ${gameType} match`);
+    
+    // Find an available room with 1 player waiting
+    let availableRoom = null;
+    for (const [code, room] of rooms.entries()) {
+      if (room.players.length === 1 && !room.isPrivate && !room.gameStarted) {
+        availableRoom = room;
+        break;
+      }
+    }
+
+    if (availableRoom) {
+      // Join the existing room
+      const playerNumber = 2; // Second player
+      const player = {
+        id: socket.id,
+        name: playerName,
+        playerNumber,
+        isReady: false,
+      };
+
+      availableRoom.players.push(player);
+      socket.join(availableRoom.code);
+
+      // Notify both players
+      socket.emit('roomJoined', {
+        roomCode: availableRoom.code,
+        playerNumber,
+        players: availableRoom.players,
+        isRandomMatch: true
+      });
+
+      io.to(availableRoom.host).emit('playerJoined', {
+        players: availableRoom.players,
+        playerName,
+        isRandomMatch: true
+      });
+
+      console.log(`Player ${playerName} joined random match in room ${availableRoom.code}`);
+    } else {
+      // Create a new room for matchmaking
+      const roomCode = generateRoomCode();
+      const player = {
+        id: socket.id,
+        name: playerName,
+        playerNumber: 1,
+        isReady: false,
+      };
+
+      rooms.set(roomCode, {
+        code: roomCode,
+        host: socket.id,
+        players: [player],
+        gameStarted: false,
+        isPrivate: false, // Mark as available for random matchmaking
+      });
+
+      socket.join(roomCode);
+      socket.emit('roomCreated', {
+        roomCode,
+        playerNumber: 1,
+        players: [player],
+        isRandomMatch: true
+      });
+
+      console.log(`Created new random match room: ${roomCode} by ${playerName}`);
+    }
+  });
+
+  // Handle player joined
+  socket.on('playerJoined', (data) => {
+    const room = rooms.get(data.roomCode);
+    if (room) {
+      io.to(data.roomCode).emit('playerJoined', {
+        players: room.players,
+        playerName: data.playerName,
+        isRandomMatch: data.isRandomMatch || false
+      });
+    }
+  });
+
+  // Handle chat messages
+  socket.on('sendChatMessage', ({ roomCode, playerName, message }) => {
+    const room = rooms.get(roomCode);
+    if (room) {
+      io.to(roomCode).emit('receiveChatMessage', {
+        playerName,
+        message,
+        timestamp: new Date().toISOString()
+      });
+    }
+  });
+
   // Create room
-  socket.on('createRoom', ({ playerName }) => {
+  socket.on('createRoom', ({ playerName, isPrivate = true }) => {
     const roomCode = generateRoomCode();
     const player = {
       id: socket.id,
@@ -53,6 +148,7 @@ io.on('connection', (socket) => {
       host: socket.id,
       players: [player],
       gameStarted: false,
+      isPrivate: isPrivate !== false, // Default to true for backward compatibility
     });
 
     socket.join(roomCode);
